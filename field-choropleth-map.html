@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Field metrics — satellite choropleth</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@500;600&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: Inter, system-ui, sans-serif; }
+    #map { width: 100%; height: 100%; }
+
+    /* Top-left legend — vertical 0 → 256 like reference */
+    .legend-wrap {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      left: 12px;
+      background: rgba(255, 255, 255, 0.92);
+      padding: 8px 10px 8px 8px;
+      border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+      display: flex;
+      align-items: stretch;
+      gap: 6px;
+      pointer-events: auto;
+      font-size: 11px;
+      font-weight: 600;
+      color: #222;
+    }
+    .legend-ticks {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      text-align: right;
+      padding: 2px 0;
+      min-height: 168px;
+      font-variant-numeric: tabular-nums;
+    }
+    /* Live cursor position (WGS84) */
+    .map-cursor-coords {
+      position: absolute;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      padding: 6px 12px;
+      background: rgba(0, 0, 0, 0.78);
+      color: #fff;
+      font: 12px/1.35 ui-monospace, "Cascadia Mono", monospace;
+      border-radius: 4px;
+      pointer-events: auto;
+      white-space: nowrap;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+    }
+
+    .legend-bar {
+      width: 20px;
+      min-height: 168px;
+      border: 1px solid rgba(0, 0, 0, 0.35);
+      border-radius: 2px;
+      /* 0 bottom: dark grey/black — mid: orange/red — top: lime green */
+      background: linear-gradient(
+        to top,
+        #141416 0%,
+        #3d2a1f 12%,
+        #c45c12 38%,
+        #e85d04 50%,
+        #c4d020 72%,
+        #8fe04a 86%,
+        #6eeb83 100%
+      );
+    }
+
+    /* Slide-in panel */
+    .panel-toggle {
+      position: absolute;
+      z-index: 1000;
+      top: 12px;
+      right: 12px;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.95);
+      box-shadow: 0 1px 6px rgba(0, 0, 0, 0.2);
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .panel-toggle:hover { background: #fff; }
+
+    #side {
+      position: absolute;
+      z-index: 1000;
+      top: 0;
+      right: 0;
+      width: min(340px, 92vw);
+      height: 100%;
+      background: rgba(18, 22, 28, 0.96);
+      color: #e8eaed;
+      padding: 14px 14px 24px;
+      overflow-y: auto;
+      transform: translateX(100%);
+      transition: transform 0.2s ease;
+      box-shadow: -4px 0 16px rgba(0, 0, 0, 0.35);
+    }
+    #side.open { transform: translateX(0); }
+    #side h2 { margin: 0 0 8px; font-size: 14px; }
+    #side p { margin: 0 0 10px; font-size: 11px; color: #9aa0a6; line-height: 1.45; }
+    label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: #9aa0a6; margin: 10px 0 4px; }
+    input, select, textarea {
+      width: 100%;
+      padding: 7px 9px;
+      border-radius: 6px;
+      border: 1px solid #3c4043;
+      background: #202124;
+      color: #e8eaed;
+      font-size: 12px;
+    }
+    textarea { min-height: 70px; font-family: ui-monospace, monospace; font-size: 10px; }
+    .btn {
+      width: 100%;
+      margin-top: 8px;
+      padding: 8px;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      font-size: 12px;
+      cursor: pointer;
+      background: #1a73e8;
+      color: #fff;
+    }
+    .btn:hover { filter: brightness(1.06); }
+    .btn-sec { background: #3c4043; color: #fff; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .status { font-size: 11px; color: #8ab4f8; margin-top: 8px; }
+    input[type="file"] { font-size: 10px; }
+    .saved-points-list {
+      max-height: 160px;
+      overflow-y: auto;
+      margin: 8px 0 0;
+      padding: 6px 8px;
+      border: 1px solid #3c4043;
+      border-radius: 6px;
+      background: #161b22;
+    }
+    .saved-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 0;
+      border-bottom: 1px solid #30363d;
+      font-size: 10px;
+      font-family: ui-monospace, monospace;
+    }
+    .saved-row:last-child { border-bottom: none; }
+    .del-pt {
+      flex-shrink: 0;
+      padding: 2px 8px;
+      border: none;
+      border-radius: 4px;
+      background: #5f2120;
+      color: #f8b4b4;
+      font-size: 11px;
+      cursor: pointer;
+    }
+    .del-pt:hover { background: #7a2826; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <div class="legend-wrap" aria-label="Color scale 0 to 256">
+    <div class="legend-ticks">
+      <span>256</span>
+      <span>192</span>
+      <span>128</span>
+      <span>64</span>
+      <span>0</span>
+    </div>
+    <div class="legend-bar" title="Value scale"></div>
+  </div>
+
+  <button type="button" class="panel-toggle" id="togglePanel" aria-expanded="false">Data &amp; layers</button>
+
+  <aside id="side">
+    <h2>Load field polygons</h2>
+    <p>
+      GeoJSON polygons need a numeric property for coloring (default <code>value</code>, 0–256).
+      Use <code>pq</code> (0–1) with “Scale 0–1 → 256” checked. Match your notebook: export one feature per field with score.
+    </p>
+
+    <label>Value property</label>
+    <select id="propName">
+      <option value="value">value</option>
+      <option value="score">score</option>
+      <option value="PQ">PQ</option>
+      <option value="mean">mean</option>
+    </select>
+
+    <label>
+      <input type="checkbox" id="scale01" />
+      Property is 0–1 (multiply by 256)
+    </label>
+
+    <label>GeoJSON URL (CORS must allow)</label>
+    <input type="url" id="url" placeholder="https://…/fields.geojson" />
+    <button type="button" class="btn" id="btnFetch">Fetch &amp; render</button>
+
+    <label>Or GeoJSON file</label>
+    <input type="file" id="file" accept=".geojson,.json" />
+
+    <label>Or paste GeoJSON</label>
+    <textarea id="paste" placeholder='{"type":"FeatureCollection","features":[...]}'></textarea>
+    <button type="button" class="btn btn-sec" id="btnPaste">Draw</button>
+
+    <button type="button" class="btn btn-sec" id="btnDemo" style="margin-top:14px">Reload demo (Louisiana-style fields)</button>
+    <button type="button" class="btn btn-sec" id="btnClear">Clear polygons</button>
+
+    <hr style="margin: 16px 0; border: none; border-top: 1px solid #3c4043" />
+    <h2 style="font-size: 13px; margin: 0 0 4px">Saved click points</h2>
+    <p style="margin: 0 0 8px; font-size: 11px; color: #9aa0a6; line-height: 1.4">
+      Click the map to save points; a <strong>yellow path</strong> connects them in order. Click <strong>Generate bounding box</strong> once — after that, each new or removed point <strong>updates the box</strong> automatically until you clear all points.
+    </p>
+    <div id="savedPointsList" class="saved-points-list" aria-live="polite"></div>
+    <button type="button" class="btn" id="btnGenBbox" style="margin-top: 8px" disabled>Generate bounding box</button>
+    <div class="row" style="margin-top: 8px">
+      <button type="button" class="btn btn-sec" id="btnExportGeo">Export .geojson</button>
+      <button type="button" class="btn btn-sec" id="btnExportCsv">Export .csv</button>
+    </div>
+    <button type="button" class="btn btn-sec" id="btnClearSaved">Clear all saved points</button>
+
+    <div class="status" id="status"></div>
+  </aside>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script>
+    /** Map 0–256 to fill color: dark (low) → orange/red (mid) → lime (high) — matches reference style */
+    function colorFor256(v) {
+      const x = Math.max(0, Math.min(256, Number(v) || 0)) / 256;
+      const c0 = [20, 20, 22];
+      const c1 = [220, 88, 8];
+      const c2 = [110, 235, 120];
+      let r, g, b;
+      if (x <= 0.5) {
+        const t = x / 0.5;
+        r = c0[0] + (c1[0] - c0[0]) * t;
+        g = c0[1] + (c1[1] - c0[1]) * t;
+        b = c0[2] + (c1[2] - c0[2]) * t;
+      } else {
+        const t = (x - 0.5) / 0.5;
+        r = c1[0] + (c2[0] - c1[0]) * t;
+        g = c1[1] + (c2[1] - c1[1]) * t;
+        b = c1[2] + (c2[2] - c1[2]) * t;
+      }
+      return "rgb(" + (r | 0) + "," + (g | 0) + "," + (b | 0) + ")";
+    }
+
+    function getFeatureValue(feat, prop, scale01) {
+      const p = feat.properties || {};
+      let raw = p[prop];
+      if (raw === undefined || raw === null) {
+        for (const k of Object.keys(p)) {
+          if (typeof p[k] === "number") {
+            raw = p[k];
+            break;
+          }
+        }
+      }
+      let n = Number(raw);
+      if (!Number.isFinite(n)) return 0;
+      if (scale01) n = n * 256;
+      return Math.max(0, Math.min(256, n));
+    }
+
+    const sat = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 19, attribution: "Imagery &copy; Esri" }
+    );
+
+    /* Tensas River / Louisiana ag area — similar to reference screenshot */
+    const map = L.map("map", { zoomControl: true }).setView([31.95, -91.32], 12);
+    sat.addTo(map);
+
+    const coordEl = L.DomUtil.create("div", "map-cursor-coords", map.getContainer());
+    map.on("mousemove", (e) => {
+      coordEl.textContent =
+        "Latitude " + e.latlng.lat.toFixed(6) + " · Longitude " + e.latlng.lng.toFixed(6);
+    });
+    map.on("mouseout", () => {
+      coordEl.textContent = "";
+    });
+
+    const overlay = L.layerGroup().addTo(map);
+    const bboxFromButtonLayer = L.layerGroup().addTo(map);
+    const linkBboxLayer = L.layerGroup().addTo(map);
+    const pointsLayer = L.layerGroup().addTo(map);
+    let geoLayer = null;
+
+    const LS_POINTS = "agri_choropleth_saved_clicks_v1";
+    const savedPoints = [];
+
+    /** Axis-aligned bounds (SW/NE latlng) with padding — export + “Generate bounding box” */
+    function computeBoundingBoxLatLngPad() {
+      if (!savedPoints.length) return null;
+      let minLat = Infinity;
+      let maxLat = -Infinity;
+      let minLng = Infinity;
+      let maxLng = -Infinity;
+      savedPoints.forEach((p) => {
+        minLat = Math.min(minLat, p.lat);
+        maxLat = Math.max(maxLat, p.lat);
+        minLng = Math.min(minLng, p.lng);
+        maxLng = Math.max(maxLng, p.lng);
+      });
+      const dLat = maxLat - minLat;
+      const dLng = maxLng - minLng;
+      const padLat = Math.max(dLat * 0.08, 0.00035);
+      const padLng = Math.max(dLng * 0.08, 0.00035);
+      return {
+        sw: L.latLng(minLat - padLat, minLng - padLng),
+        ne: L.latLng(maxLat + padLat, maxLng + padLng),
+      };
+    }
+
+    function updatePointsChainAndBbox() {
+      linkBboxLayer.clearLayers();
+      if (!savedPoints.length) return;
+      if (savedPoints.length >= 2) {
+        L.polyline(
+          savedPoints.map((p) => [p.lat, p.lng]),
+          {
+            color: "#ffd60a",
+            weight: 3,
+            opacity: 0.92,
+            lineJoin: "miter",
+            lineCap: "butt",
+          }
+        )
+          .addTo(linkBboxLayer)
+          .bindPopup("<strong>Path</strong> (click order, straight segments)<br>" + savedPoints.length + " points");
+      }
+    }
+
+    function syncGenerateBboxButton() {
+      const btn = document.getElementById("btnGenBbox");
+      if (btn) btn.disabled = !savedPoints.length;
+    }
+
+    /** After first "Generate bounding box", redraw bbox whenever points change */
+    let bboxAutoUpdate = false;
+
+    function renderBboxRectangleOnLayer() {
+      bboxFromButtonLayer.clearLayers();
+      const box = computeBoundingBoxLatLngPad();
+      if (!box) return;
+      L.rectangle(L.latLngBounds(box.sw, box.ne), {
+        color: "#2b7bff",
+        weight: 3,
+        fillOpacity: 0,
+        opacity: 1,
+        lineJoin: "miter",
+      })
+        .addTo(bboxFromButtonLayer)
+        .bindPopup(
+          "<strong>Bounding box</strong> (straight edges)<br>SW " +
+            box.sw.lat.toFixed(6) +
+            ", " +
+            box.sw.lng.toFixed(6) +
+            "<br>NE " +
+            box.ne.lat.toFixed(6) +
+            ", " +
+            box.ne.lng.toFixed(6)
+        );
+    }
+
+    function onSavedPointsChanged() {
+      if (!savedPoints.length) {
+        bboxAutoUpdate = false;
+        bboxFromButtonLayer.clearLayers();
+        updatePointsChainAndBbox();
+        syncGenerateBboxButton();
+        return;
+      }
+      updatePointsChainAndBbox();
+      if (bboxAutoUpdate) {
+        renderBboxRectangleOnLayer();
+      } else {
+        bboxFromButtonLayer.clearLayers();
+      }
+      syncGenerateBboxButton();
+    }
+
+    function drawBoundingBoxFromButton() {
+      if (!savedPoints.length) {
+        setStatus("Save at least one point on the map first.", false);
+        return;
+      }
+      bboxAutoUpdate = true;
+      renderBboxRectangleOnLayer();
+      setStatus(
+        "Bounding box on. Plot more points — the box will grow or shrink automatically.",
+        true
+      );
+    }
+
+    function persistSavedPoints() {
+      localStorage.setItem(
+        LS_POINTS,
+        JSON.stringify(savedPoints.map((p) => ({ id: p.id, lat: p.lat, lng: p.lng, t: p.t })))
+      );
+    }
+
+    function redrawSavedList() {
+      const box = document.getElementById("savedPointsList");
+      if (!box) return;
+      if (!savedPoints.length) {
+        box.innerHTML = '<div style="color:#9aa0a6;font-size:11px;padding:4px 0">No points yet — click the map.</div>';
+        return;
+      }
+      box.innerHTML = "";
+      savedPoints.forEach((p) => {
+        const row = document.createElement("div");
+        row.className = "saved-row";
+        const label = document.createElement("span");
+        label.textContent = p.lat.toFixed(5) + ", " + p.lng.toFixed(5);
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "del-pt";
+        del.setAttribute("aria-label", "Remove point");
+        del.textContent = "×";
+        del.addEventListener("click", () => removeSavedPoint(p.id));
+        row.appendChild(label);
+        row.appendChild(del);
+        box.appendChild(row);
+      });
+    }
+
+    function removeSavedPoint(id) {
+      const i = savedPoints.findIndex((p) => p.id === id);
+      if (i === -1) return;
+      pointsLayer.removeLayer(savedPoints[i].marker);
+      savedPoints.splice(i, 1);
+      persistSavedPoints();
+      redrawSavedList();
+      onSavedPointsChanged();
+      setStatus("Removed 1 point. " + savedPoints.length + " saved.", true);
+    }
+
+    function addSavedPoint(latlng) {
+      const id = "p_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+      const m = L.circleMarker(latlng, {
+        radius: 8,
+        color: "#fff",
+        weight: 2,
+        fillColor: "#e63946",
+        fillOpacity: 0.95,
+      }).addTo(pointsLayer);
+      m.bindPopup(
+        "<strong>Saved point</strong><br>" +
+          latlng.lat.toFixed(6) +
+          ", " +
+          latlng.lng.toFixed(6)
+      );
+      savedPoints.push({ id, lat: latlng.lat, lng: latlng.lng, t: Date.now(), marker: m });
+      persistSavedPoints();
+      redrawSavedList();
+      onSavedPointsChanged();
+      setStatus("Saved point #" + savedPoints.length + " (lat/lon stored in browser).", true);
+    }
+
+    function loadSavedPoints() {
+      try {
+        const raw = localStorage.getItem(LS_POINTS);
+        if (!raw) {
+          redrawSavedList();
+          onSavedPointsChanged();
+          return;
+        }
+        const arr = JSON.parse(raw);
+        if (!Array.isArray(arr)) {
+          redrawSavedList();
+          onSavedPointsChanged();
+          return;
+        }
+        arr.forEach((o) => {
+          if (typeof o.lat !== "number" || typeof o.lng !== "number") return;
+          const id = o.id || "p_" + (o.t || 0);
+          const latlng = L.latLng(o.lat, o.lng);
+          const m = L.circleMarker(latlng, {
+            radius: 8,
+            color: "#fff",
+            weight: 2,
+            fillColor: "#e63946",
+            fillOpacity: 0.95,
+          }).addTo(pointsLayer);
+          m.bindPopup("<strong>Saved point</strong><br>" + o.lat.toFixed(6) + ", " + o.lng.toFixed(6));
+          savedPoints.push({ id, lat: o.lat, lng: o.lng, t: o.t || 0, marker: m });
+        });
+        redrawSavedList();
+        onSavedPointsChanged();
+      } catch (_) {
+        redrawSavedList();
+        onSavedPointsChanged();
+      }
+    }
+
+    map.on("click", (e) => {
+      addSavedPoint(e.latlng);
+    });
+
+    document.getElementById("btnGenBbox").addEventListener("click", drawBoundingBoxFromButton);
+
+    function downloadBlob(filename, text, mime) {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text], { type: mime }));
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    document.getElementById("btnExportGeo").addEventListener("click", () => {
+      const features = savedPoints.map((p) => ({
+        type: "Feature",
+        properties: { savedAt: new Date(p.t).toISOString(), kind: "saved_point" },
+        geometry: { type: "Point", coordinates: [p.lng, p.lat] },
+      }));
+      const b = computeBoundingBoxLatLngPad();
+      if (b && savedPoints.length) {
+        const sw = b.sw;
+        const ne = b.ne;
+        const ring = [
+          [sw.lng, sw.lat],
+          [ne.lng, sw.lat],
+          [ne.lng, ne.lat],
+          [sw.lng, ne.lat],
+          [sw.lng, sw.lat],
+        ];
+        features.push({
+          type: "Feature",
+          properties: { kind: "bounding_box" },
+          geometry: { type: "Polygon", coordinates: [ring] },
+        });
+      }
+      if (savedPoints.length >= 2) {
+        features.push({
+          type: "Feature",
+          properties: { kind: "saved_path", order: "click order" },
+          geometry: {
+            type: "LineString",
+            coordinates: savedPoints.map((p) => [p.lng, p.lat]),
+          },
+        });
+      }
+      const fc = { type: "FeatureCollection", features };
+      downloadBlob("saved_map_points.geojson", JSON.stringify(fc, null, 2), "application/geo+json");
+      setStatus("Downloaded saved_map_points.geojson (points + bbox + path).", true);
+    });
+
+    document.getElementById("btnExportCsv").addEventListener("click", () => {
+      const lines = ["latitude,longitude", ...savedPoints.map((p) => p.lat + "," + p.lng)];
+      const b = computeBoundingBoxLatLngPad();
+      if (b && savedPoints.length) {
+        lines.push("");
+        lines.push("bounding_box_sw_lat,bounding_box_sw_lon,bounding_box_ne_lat,bounding_box_ne_lon");
+        lines.push(
+          b.sw.lat + "," + b.sw.lng + "," + b.ne.lat + "," + b.ne.lng
+        );
+      }
+      downloadBlob("saved_map_points.csv", lines.join("\n"), "text/csv;charset=utf-8");
+      setStatus("Downloaded saved_map_points.csv", true);
+    });
+
+    document.getElementById("btnClearSaved").addEventListener("click", () => {
+      savedPoints.forEach((p) => pointsLayer.removeLayer(p.marker));
+      savedPoints.length = 0;
+      localStorage.removeItem(LS_POINTS);
+      redrawSavedList();
+      onSavedPointsChanged();
+      setStatus("All saved points cleared.", true);
+    });
+
+    loadSavedPoints();
+
+    function setStatus(t, ok) {
+      const el = document.getElementById("status");
+      el.textContent = t;
+      el.style.color = ok === false ? "#f28b82" : "#8ab4f8";
+    }
+
+    function styleFeature(feat) {
+      const prop = document.getElementById("propName").value;
+      const scale01 = document.getElementById("scale01").checked;
+      const v = getFeatureValue(feat, prop, scale01);
+      return {
+        fillColor: colorFor256(v),
+        color: "rgba(255,255,255,0.55)",
+        weight: 1,
+        fillOpacity: 0.72,
+      };
+    }
+
+    function renderGeoJSON(data) {
+      if (geoLayer) {
+        overlay.removeLayer(geoLayer);
+        geoLayer = null;
+      }
+      const gj = typeof data === "string" ? JSON.parse(data) : data;
+      geoLayer = L.geoJSON(gj, {
+        style: styleFeature,
+        onEachFeature(feature, layer) {
+          const p = feature.properties || {};
+          const v = getFeatureValue(feature, document.getElementById("propName").value, document.getElementById("scale01").checked);
+          layer.bindPopup(
+            "<div style='font:12px system-ui;min-width:120px'><strong>value (0–256)</strong><br>" +
+              v.toFixed(1) +
+              "</div><pre style='margin:6px 0 0;font:10px monospace;max-width:220px;white-space:pre-wrap'>" +
+              JSON.stringify(p, null, 2) +
+              "</pre>"
+          );
+        },
+      });
+      overlay.addLayer(geoLayer);
+      const b = geoLayer.getBounds();
+      if (b.isValid()) map.fitBounds(b.pad(0.06));
+    }
+
+    function demoGeoJSON() {
+      /* Irregular rectangles / fields with mixed scores */
+      const base = [-91.38, 31.88];
+      const dx = 0.018;
+      const dy = 0.012;
+      const vals = [240, 180, 95, 220, 45, 160, 200, 70, 250, 110, 30, 190, 130, 85, 210];
+      const features = [];
+      let i = 0;
+      for (let row = 0; row < 3; row++) {
+        for (let col = 0; col < 5; col++) {
+          const x0 = base[0] + col * dx;
+          const y0 = base[1] + row * dy;
+          const jitter = (row + col) * 0.0008;
+          const poly = {
+            type: "Polygon",
+            coordinates: [
+              [
+                [x0, y0],
+                [x0 + dx * 0.92, y0 + jitter],
+                [x0 + dx * 0.95, y0 + dy * 0.88],
+                [x0 + dx * 0.05, y0 + dy * 0.95],
+                [x0, y0],
+              ],
+            ],
+          };
+          features.push({
+            type: "Feature",
+            properties: { value: vals[i % vals.length], name: "field_" + (i + 1) },
+            geometry: poly,
+          });
+          i++;
+        }
+      }
+      return { type: "FeatureCollection", features };
+    }
+
+    setStatus("Basemap only — load GeoJSON or click “Reload demo”.", true);
+
+    document.getElementById("btnDemo").addEventListener("click", () => {
+      renderGeoJSON(demoGeoJSON());
+      setStatus("Demo fields drawn.", true);
+    });
+
+    document.getElementById("btnClear").addEventListener("click", () => {
+      if (geoLayer) overlay.removeLayer(geoLayer);
+      geoLayer = null;
+      setStatus("Cleared.", true);
+    });
+
+    document.getElementById("btnFetch").addEventListener("click", async () => {
+      const u = document.getElementById("url").value.trim();
+      if (!u) {
+        setStatus("Enter URL.", false);
+        return;
+      }
+      try {
+        const res = await fetch(u, { mode: "cors" });
+        if (!res.ok) throw new Error(res.statusText);
+        renderGeoJSON(await res.json());
+        setStatus("Loaded from URL.", true);
+      } catch (e) {
+        setStatus("Fetch failed: " + e.message, false);
+      }
+    });
+
+    document.getElementById("file").addEventListener("change", (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (!f) return;
+      const r = new FileReader();
+      r.onload = () => {
+        try {
+          renderGeoJSON(r.result);
+          setStatus("Loaded " + f.name, true);
+        } catch (err) {
+          setStatus(err.message, false);
+        }
+      };
+      r.readAsText(f);
+    });
+
+    document.getElementById("btnPaste").addEventListener("click", () => {
+      const t = document.getElementById("paste").value.trim();
+      if (!t) {
+        setStatus("Paste GeoJSON.", false);
+        return;
+      }
+      try {
+        renderGeoJSON(t);
+        setStatus("Rendered pasted GeoJSON.", true);
+      } catch (err) {
+        setStatus(err.message, false);
+      }
+    });
+
+    document.getElementById("propName").addEventListener("change", () => {
+      if (geoLayer && geoLayer.eachLayer) {
+        geoLayer.eachLayer(function (ly) {
+          if (ly.feature) ly.setStyle(styleFeature(ly.feature));
+        });
+      }
+    });
+    document.getElementById("scale01").addEventListener("change", () => {
+      document.getElementById("propName").dispatchEvent(new Event("change"));
+    });
+
+    const side = document.getElementById("side");
+    const toggle = document.getElementById("togglePanel");
+    toggle.addEventListener("click", () => {
+      const open = side.classList.toggle("open");
+      toggle.setAttribute("aria-expanded", open);
+      toggle.textContent = open ? "Close panel" : "Data & layers";
+    });
+  </script>
+</body>
+</html>
