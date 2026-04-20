@@ -24,7 +24,7 @@
       display: flex;
       align-items: stretch;
       gap: 6px;
-      pointer-events: auto;
+      pointer-events: none;
       font-size: 11px;
       font-weight: 600;
       color: #222;
@@ -50,7 +50,7 @@
       color: #fff;
       font: 12px/1.35 ui-monospace, "Cascadia Mono", monospace;
       border-radius: 4px;
-      pointer-events: auto;
+      pointer-events: none;
       white-space: nowrap;
       box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
     }
@@ -167,6 +167,72 @@
       cursor: pointer;
     }
     .del-pt:hover { background: #7a2826; }
+
+    /* AP state outline: glow on imagery so it stays readable */
+    .leaflet-ap-boundary-pane path {
+      filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 3px #000);
+    }
+
+    .mandal-search-results {
+      margin-top: 8px;
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid #3c4043;
+      border-radius: 6px;
+      background: #161b22;
+    }
+    .mandal-search-empty {
+      padding: 10px 8px;
+      font-size: 11px;
+      color: #9aa0a6;
+    }
+    button.mandal-search-row {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 8px 10px;
+      border: none;
+      border-bottom: 1px solid #30363d;
+      background: transparent;
+      color: #e8eaed;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    button.mandal-search-row:last-child {
+      border-bottom: none;
+    }
+    button.mandal-search-row:hover {
+      background: rgba(138, 180, 248, 0.12);
+    }
+    .mandal-search-row-title {
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .mandal-search-row-sub {
+      font-size: 10px;
+      color: #9aa0a6;
+      margin-top: 2px;
+    }
+
+    .field-group-block {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid #30363d;
+    }
+    .field-group-block:first-child {
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
+    }
+    .field-group-title {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #8ab4f8;
+      margin-bottom: 4px;
+    }
   </style>
 </head>
 <body>
@@ -220,10 +286,22 @@
     <button type="button" class="btn btn-sec" id="btnClear">Clear polygons</button>
 
     <hr style="margin: 16px 0; border: none; border-top: 1px solid #3c4043" />
-    <h2 style="font-size: 13px; margin: 0 0 4px">Saved click points</h2>
+    <h2 style="font-size: 13px; margin: 0 0 4px">Search mandals</h2>
     <p style="margin: 0 0 8px; font-size: 11px; color: #9aa0a6; line-height: 1.4">
-      Click the map to save points; a <strong>yellow path</strong> connects them in order. Click <strong>Generate bounding box</strong> once — after that, each new or removed point <strong>updates the box</strong> automatically until you clear all points.
+      Type part of a <strong>mandal</strong> name, <strong>district</strong>, or <strong>code</strong>. Choose a match to fly the map and outline that mandal.
     </p>
+    <label for="mandalSearchInput" style="margin-top: 0">Search</label>
+    <input type="search" id="mandalSearchInput" placeholder="Mandals load with the map…" autocomplete="off" disabled />
+    <div id="mandalSearchResults" class="mandal-search-results" role="listbox" aria-label="Mandal search matches"></div>
+
+    <hr style="margin: 16px 0; border: none; border-top: 1px solid #3c4043" />
+    <h2 style="font-size: 13px; margin: 0 0 4px">Saved click points (by field)</h2>
+    <p style="margin: 0 0 8px; font-size: 11px; color: #9aa0a6; line-height: 1.4">
+      Choose the <strong>active field</strong>, then click the map — points go into that field only. Each field has its own color and path. Use <strong>Add field</strong> for Field 2, 3, …. Export saves <strong>one GeoJSON</strong> with every field grouped by <code>fieldNo</code>.
+    </p>
+    <label for="activeFieldGroup">Active field (new clicks)</label>
+    <select id="activeFieldGroup"></select>
+    <button type="button" class="btn btn-sec" id="btnAddField" style="margin-top: 8px">+ Add field</button>
     <div id="savedPointsList" class="saved-points-list" aria-live="polite"></div>
     <button type="button" class="btn" id="btnGenBbox" style="margin-top: 8px" disabled>Generate bounding box</button>
     <div class="row" style="margin-top: 8px">
@@ -280,9 +358,28 @@
       { maxZoom: 19, attribution: "Imagery &copy; Esri" }
     );
 
-    /* Tensas River / Louisiana ag area — similar to reference screenshot */
-    const map = L.map("map", { zoomControl: true }).setView([31.95, -91.32], 12);
+    /* Default view: Andhra Pradesh until boundary GeoJSON fits bounds */
+    const map = L.map("map", { zoomControl: true }).setView([15.4, 79.2], 7);
     sat.addTo(map);
+
+    map.createPane("apBoundaryBase");
+    map.getPane("apBoundaryBase").style.zIndex = 250;
+    map.getPane("apBoundaryBase").classList.add("leaflet-ap-boundary-pane");
+
+    map.createPane("apMandalsBase");
+    map.getPane("apMandalsBase").style.zIndex = 255;
+
+    map.createPane("mandalSearchHighlight");
+    map.getPane("mandalSearchHighlight").style.zIndex = 350;
+
+    /** State outline (`ap_boundary.geojson`) and mandal lines (`ap_mandals.geojson`) — under field choropleth */
+    const apBoundaryLayer = L.layerGroup().addTo(map);
+    const apMandalsLayer = L.layerGroup().addTo(map);
+    let apBoundaryGeo = null;
+    let apMandalsGeo = null;
+    /** Prebuilt rows for mandal search (after ap_mandals.geojson loads) */
+    let apMandalsSearchList = null;
+    const mandalSearchHighlightLayer = L.layerGroup().addTo(map);
 
     const coordEl = L.DomUtil.create("div", "map-cursor-coords", map.getContainer());
     map.on("mousemove", (e) => {
@@ -299,17 +396,100 @@
     const pointsLayer = L.layerGroup().addTo(map);
     let geoLayer = null;
 
-    const LS_POINTS = "agri_choropleth_saved_clicks_v1";
-    const savedPoints = [];
+    const LS_GROUPS = "agri_choropleth_saved_groups_v2";
+    const LS_POINTS_LEGACY = "agri_choropleth_saved_clicks_v1";
 
-    /** Axis-aligned bounds (SW/NE latlng) with padding — export + “Generate bounding box” */
+    function newGroupId() {
+      return "g_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    }
+    function newPointId() {
+      return "p_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
+    }
+
+    let pointGroups = [];
+    let activeGroupId = null;
+
+    function markerStyleForField(fieldNo) {
+      const hue = ((fieldNo - 1) * 47) % 360;
+      return {
+        radius: 8,
+        color: "#fff",
+        weight: 2,
+        fillColor: "hsl(" + hue + ",72%,52%)",
+        fillOpacity: 0.95,
+      };
+    }
+    function pathStyleForField(fieldNo) {
+      const hue = ((fieldNo - 1) * 47) % 360;
+      return {
+        color: "hsl(" + hue + ",85%,58%)",
+        weight: 3,
+        opacity: 0.92,
+        lineJoin: "miter",
+        lineCap: "butt",
+      };
+    }
+
+    function getActiveGroup() {
+      const g = pointGroups.find(function (x) {
+        return x.id === activeGroupId;
+      });
+      return g || pointGroups[0] || null;
+    }
+    function allPointsFlat() {
+      const out = [];
+      pointGroups.forEach(function (grp) {
+        grp.points.forEach(function (p) {
+          out.push(p);
+        });
+      });
+      return out;
+    }
+    function nextFieldNo() {
+      let m = 0;
+      pointGroups.forEach(function (g) {
+        if (g.fieldNo > m) m = g.fieldNo;
+      });
+      return m + 1;
+    }
+    function ensureDefaultGroup() {
+      if (!pointGroups.length) {
+        const id = newGroupId();
+        pointGroups.push({ id: id, fieldNo: 1, label: "Field 1", points: [] });
+        activeGroupId = id;
+      }
+    }
+    function syncActiveFieldSelect() {
+      const sel = document.getElementById("activeFieldGroup");
+      if (!sel) return;
+      const cur = activeGroupId;
+      sel.innerHTML = "";
+      pointGroups.forEach(function (g) {
+        const opt = document.createElement("option");
+        opt.value = g.id;
+        opt.textContent = g.label + " (" + g.points.length + " pt" + (g.points.length === 1 ? ")" : "s)");
+        sel.appendChild(opt);
+      });
+      if (cur && pointGroups.some(function (x) {
+        return x.id === cur;
+      })) {
+        sel.value = cur;
+        activeGroupId = cur;
+      } else if (pointGroups[0]) {
+        sel.value = pointGroups[0].id;
+        activeGroupId = pointGroups[0].id;
+      }
+    }
+
+    /** Axis-aligned bounds (SW/NE latlng) with padding — export + “Generate bounding box” (all fields) */
     function computeBoundingBoxLatLngPad() {
-      if (!savedPoints.length) return null;
+      const flat = allPointsFlat();
+      if (!flat.length) return null;
       let minLat = Infinity;
       let maxLat = -Infinity;
       let minLng = Infinity;
       let maxLng = -Infinity;
-      savedPoints.forEach((p) => {
+      flat.forEach(function (p) {
         minLat = Math.min(minLat, p.lat);
         maxLat = Math.max(maxLat, p.lat);
         minLng = Math.min(minLng, p.lng);
@@ -327,26 +507,28 @@
 
     function updatePointsChainAndBbox() {
       linkBboxLayer.clearLayers();
-      if (!savedPoints.length) return;
-      if (savedPoints.length >= 2) {
+      pointGroups.forEach(function (g) {
+        if (g.points.length < 2) return;
         L.polyline(
-          savedPoints.map((p) => [p.lat, p.lng]),
-          {
-            color: "#ffd60a",
-            weight: 3,
-            opacity: 0.92,
-            lineJoin: "miter",
-            lineCap: "butt",
-          }
+          g.points.map(function (p) {
+            return [p.lat, p.lng];
+          }),
+          pathStyleForField(g.fieldNo)
         )
           .addTo(linkBboxLayer)
-          .bindPopup("<strong>Path</strong> (click order, straight segments)<br>" + savedPoints.length + " points");
-      }
+          .bindPopup(
+            "<strong>" +
+              g.label +
+              "</strong> path<br>" +
+              g.points.length +
+              " points (click order)"
+          );
+      });
     }
 
     function syncGenerateBboxButton() {
       const btn = document.getElementById("btnGenBbox");
-      if (btn) btn.disabled = !savedPoints.length;
+      if (btn) btn.disabled = !allPointsFlat().length;
     }
 
     /** After first "Generate bounding box", redraw bbox whenever points change */
@@ -377,7 +559,7 @@
     }
 
     function onSavedPointsChanged() {
-      if (!savedPoints.length) {
+      if (!allPointsFlat().length) {
         bboxAutoUpdate = false;
         bboxFromButtonLayer.clearLayers();
         updatePointsChainAndBbox();
@@ -394,7 +576,7 @@
     }
 
     function drawBoundingBoxFromButton() {
-      if (!savedPoints.length) {
+      if (!allPointsFlat().length) {
         setStatus("Save at least one point on the map first.", false);
         return;
       }
@@ -407,104 +589,195 @@
     }
 
     function persistSavedPoints() {
-      localStorage.setItem(
-        LS_POINTS,
-        JSON.stringify(savedPoints.map((p) => ({ id: p.id, lat: p.lat, lng: p.lng, t: p.t })))
-      );
+      const payload = {
+        version: 2,
+        activeGroupId: activeGroupId,
+        groups: pointGroups.map(function (g) {
+          return {
+            id: g.id,
+            fieldNo: g.fieldNo,
+            label: g.label,
+            points: g.points.map(function (p) {
+              return { id: p.id, lat: p.lat, lng: p.lng, t: p.t };
+            }),
+          };
+        }),
+      };
+      localStorage.setItem(LS_GROUPS, JSON.stringify(payload));
     }
 
     function redrawSavedList() {
       const box = document.getElementById("savedPointsList");
       if (!box) return;
-      if (!savedPoints.length) {
-        box.innerHTML = '<div style="color:#9aa0a6;font-size:11px;padding:4px 0">No points yet — click the map.</div>';
+      if (!allPointsFlat().length) {
+        box.innerHTML =
+          '<div style="color:#9aa0a6;font-size:11px;padding:4px 0">No points yet — pick a field above and click the map.</div>';
         return;
       }
       box.innerHTML = "";
-      savedPoints.forEach((p) => {
-        const row = document.createElement("div");
-        row.className = "saved-row";
-        const label = document.createElement("span");
-        label.textContent = p.lat.toFixed(5) + ", " + p.lng.toFixed(5);
-        const del = document.createElement("button");
-        del.type = "button";
-        del.className = "del-pt";
-        del.setAttribute("aria-label", "Remove point");
-        del.textContent = "×";
-        del.addEventListener("click", () => removeSavedPoint(p.id));
-        row.appendChild(label);
-        row.appendChild(del);
-        box.appendChild(row);
+      pointGroups.forEach(function (g) {
+        const block = document.createElement("div");
+        block.className = "field-group-block";
+        const ht = document.createElement("div");
+        ht.className = "field-group-title";
+        ht.textContent = g.label + " · fieldNo " + g.fieldNo + " · " + g.points.length + " pt";
+        block.appendChild(ht);
+        if (!g.points.length) {
+          const empty = document.createElement("div");
+          empty.style.cssText = "font-size:10px;color:#9aa0a6;padding:2px 0 6px";
+          empty.textContent = "—";
+          block.appendChild(empty);
+        } else {
+          g.points.forEach(function (p) {
+            const row = document.createElement("div");
+            row.className = "saved-row";
+            const label = document.createElement("span");
+            label.textContent = p.lat.toFixed(5) + ", " + p.lng.toFixed(5);
+            const del = document.createElement("button");
+            del.type = "button";
+            del.className = "del-pt";
+            del.setAttribute("aria-label", "Remove point");
+            del.textContent = "×";
+            del.addEventListener("click", function () {
+              removeSavedPoint(p.id);
+            });
+            row.appendChild(label);
+            row.appendChild(del);
+            block.appendChild(row);
+          });
+        }
+        box.appendChild(block);
       });
     }
 
     function removeSavedPoint(id) {
-      const i = savedPoints.findIndex((p) => p.id === id);
-      if (i === -1) return;
-      pointsLayer.removeLayer(savedPoints[i].marker);
-      savedPoints.splice(i, 1);
+      let found = null;
+      pointGroups.forEach(function (g) {
+        const i = g.points.findIndex(function (p) {
+          return p.id === id;
+        });
+        if (i !== -1) {
+          pointsLayer.removeLayer(g.points[i].marker);
+          g.points.splice(i, 1);
+          found = g;
+        }
+      });
+      if (!found) return;
       persistSavedPoints();
       redrawSavedList();
+      syncActiveFieldSelect();
       onSavedPointsChanged();
-      setStatus("Removed 1 point. " + savedPoints.length + " saved.", true);
+      setStatus("Removed 1 point. " + allPointsFlat().length + " total in all fields.", true);
     }
 
     function addSavedPoint(latlng) {
-      const id = "p_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8);
-      const m = L.circleMarker(latlng, {
-        radius: 8,
-        color: "#fff",
-        weight: 2,
-        fillColor: "#e63946",
-        fillOpacity: 0.95,
-      }).addTo(pointsLayer);
+      ensureDefaultGroup();
+      const g = getActiveGroup();
+      if (!g) return;
+      const id = newPointId();
+      const m = L.circleMarker(latlng, markerStyleForField(g.fieldNo)).addTo(pointsLayer);
       m.bindPopup(
-        "<strong>Saved point</strong><br>" +
+        "<strong>" +
+          g.label +
+          "</strong><br>" +
           latlng.lat.toFixed(6) +
           ", " +
           latlng.lng.toFixed(6)
       );
-      savedPoints.push({ id, lat: latlng.lat, lng: latlng.lng, t: Date.now(), marker: m });
+      g.points.push({ id: id, lat: latlng.lat, lng: latlng.lng, t: Date.now(), marker: m });
       persistSavedPoints();
       redrawSavedList();
+      syncActiveFieldSelect();
       onSavedPointsChanged();
-      setStatus("Saved point #" + savedPoints.length + " (lat/lon stored in browser).", true);
+      setStatus("Saved to " + g.label + " (point #" + g.points.length + " in that field).", true);
     }
 
     function loadSavedPoints() {
+      pointGroups = [];
+      activeGroupId = null;
+      pointsLayer.clearLayers();
       try {
-        const raw = localStorage.getItem(LS_POINTS);
-        if (!raw) {
-          redrawSavedList();
-          onSavedPointsChanged();
-          return;
+        const raw2 = localStorage.getItem(LS_GROUPS);
+        if (raw2) {
+          const data = JSON.parse(raw2);
+          if (data.version === 2 && Array.isArray(data.groups)) {
+            data.groups.forEach(function (gdat) {
+              const g = {
+                id: gdat.id || newGroupId(),
+                fieldNo: typeof gdat.fieldNo === "number" && gdat.fieldNo >= 1 ? gdat.fieldNo : pointGroups.length + 1,
+                label: String(gdat.label || "Field " + (gdat.fieldNo || pointGroups.length + 1)),
+                points: [],
+              };
+              (gdat.points || []).forEach(function (o) {
+                if (typeof o.lat !== "number" || typeof o.lng !== "number") return;
+                const id = o.id || newPointId();
+                const latlng = L.latLng(o.lat, o.lng);
+                const m = L.circleMarker(latlng, markerStyleForField(g.fieldNo)).addTo(pointsLayer);
+                m.bindPopup("<strong>" + g.label + "</strong><br>" + o.lat.toFixed(6) + ", " + o.lng.toFixed(6));
+                g.points.push({ id: id, lat: o.lat, lng: o.lng, t: o.t || 0, marker: m });
+              });
+              pointGroups.push(g);
+            });
+            if (!pointGroups.length) {
+              ensureDefaultGroup();
+            } else if (
+              typeof data.activeGroupId === "string" &&
+              pointGroups.some(function (x) {
+                return x.id === data.activeGroupId;
+              })
+            ) {
+              activeGroupId = data.activeGroupId;
+            } else {
+              activeGroupId = pointGroups[0].id;
+            }
+          } else {
+            ensureDefaultGroup();
+          }
+        } else {
+          const raw1 = localStorage.getItem(LS_POINTS_LEGACY);
+          if (raw1) {
+            const arr = JSON.parse(raw1);
+            if (Array.isArray(arr) && arr.length) {
+              const g = { id: newGroupId(), fieldNo: 1, label: "Field 1", points: [] };
+              arr.forEach(function (o) {
+                if (typeof o.lat !== "number" || typeof o.lng !== "number") return;
+                const id = o.id || newPointId();
+                const latlng = L.latLng(o.lat, o.lng);
+                const m = L.circleMarker(latlng, markerStyleForField(1)).addTo(pointsLayer);
+                m.bindPopup("<strong>Field 1</strong><br>" + o.lat.toFixed(6) + ", " + o.lng.toFixed(6));
+                g.points.push({ id: id, lat: o.lat, lng: o.lng, t: o.t || 0, marker: m });
+              });
+              pointGroups.push(g);
+              activeGroupId = g.id;
+              localStorage.removeItem(LS_POINTS_LEGACY);
+              persistSavedPoints();
+            } else {
+              ensureDefaultGroup();
+            }
+          } else {
+            ensureDefaultGroup();
+          }
         }
-        const arr = JSON.parse(raw);
-        if (!Array.isArray(arr)) {
-          redrawSavedList();
-          onSavedPointsChanged();
-          return;
-        }
-        arr.forEach((o) => {
-          if (typeof o.lat !== "number" || typeof o.lng !== "number") return;
-          const id = o.id || "p_" + (o.t || 0);
-          const latlng = L.latLng(o.lat, o.lng);
-          const m = L.circleMarker(latlng, {
-            radius: 8,
-            color: "#fff",
-            weight: 2,
-            fillColor: "#e63946",
-            fillOpacity: 0.95,
-          }).addTo(pointsLayer);
-          m.bindPopup("<strong>Saved point</strong><br>" + o.lat.toFixed(6) + ", " + o.lng.toFixed(6));
-          savedPoints.push({ id, lat: o.lat, lng: o.lng, t: o.t || 0, marker: m });
-        });
-        redrawSavedList();
-        onSavedPointsChanged();
       } catch (_) {
-        redrawSavedList();
-        onSavedPointsChanged();
+        pointGroups = [];
+        ensureDefaultGroup();
       }
+      if (!pointGroups.length) ensureDefaultGroup();
+      syncActiveFieldSelect();
+      redrawSavedList();
+      onSavedPointsChanged();
+    }
+
+    function addNewFieldGroup() {
+      ensureDefaultGroup();
+      const fn = nextFieldNo();
+      const id = newGroupId();
+      pointGroups.push({ id: id, fieldNo: fn, label: "Field " + fn, points: [] });
+      activeGroupId = id;
+      syncActiveFieldSelect();
+      persistSavedPoints();
+      redrawSavedList();
+      setStatus("Added Field " + fn + " — new clicks go to this field.", true);
     }
 
     map.on("click", (e) => {
@@ -522,13 +795,37 @@
     }
 
     document.getElementById("btnExportGeo").addEventListener("click", () => {
-      const features = savedPoints.map((p) => ({
-        type: "Feature",
-        properties: { savedAt: new Date(p.t).toISOString(), kind: "saved_point" },
-        geometry: { type: "Point", coordinates: [p.lng, p.lat] },
-      }));
+      const features = [];
+      pointGroups.forEach(function (g) {
+        if (!g.points.length) return;
+        const coords = g.points.map(function (p) {
+          return [p.lng, p.lat];
+        });
+        features.push({
+          type: "Feature",
+          properties: {
+            kind: "field_multipoint",
+            fieldNo: g.fieldNo,
+            name: g.label,
+            pointCount: g.points.length,
+          },
+          geometry: { type: "MultiPoint", coordinates: coords },
+        });
+        if (g.points.length >= 2) {
+          features.push({
+            type: "Feature",
+            properties: {
+              kind: "field_path",
+              fieldNo: g.fieldNo,
+              name: g.label,
+              order: "click order within field",
+            },
+            geometry: { type: "LineString", coordinates: coords },
+          });
+        }
+      });
       const b = computeBoundingBoxLatLngPad();
-      if (b && savedPoints.length) {
+      if (b && allPointsFlat().length) {
         const sw = b.sw;
         const ne = b.ne;
         const ring = [
@@ -540,49 +837,327 @@
         ];
         features.push({
           type: "Feature",
-          properties: { kind: "bounding_box" },
+          properties: { kind: "bounding_box", scope: "all_fields_combined" },
           geometry: { type: "Polygon", coordinates: [ring] },
         });
       }
-      if (savedPoints.length >= 2) {
-        features.push({
-          type: "Feature",
-          properties: { kind: "saved_path", order: "click order" },
-          geometry: {
-            type: "LineString",
-            coordinates: savedPoints.map((p) => [p.lng, p.lat]),
-          },
-        });
-      }
-      const fc = { type: "FeatureCollection", features };
-      downloadBlob("saved_map_points.geojson", JSON.stringify(fc, null, 2), "application/geo+json");
-      setStatus("Downloaded saved_map_points.geojson (points + bbox + path).", true);
+      const fc = { type: "FeatureCollection", features: features };
+      downloadBlob("saved_field_groups.geojson", JSON.stringify(fc, null, 2), "application/geo+json");
+      setStatus("Downloaded saved_field_groups.geojson (" + features.length + " features, all fields).", true);
     });
 
     document.getElementById("btnExportCsv").addEventListener("click", () => {
-      const lines = ["latitude,longitude", ...savedPoints.map((p) => p.lat + "," + p.lng)];
+      const lines = ["field_no,field_label,order_in_field,latitude,longitude"];
+      pointGroups.forEach(function (g) {
+        g.points.forEach(function (p, idx) {
+          lines.push(
+            g.fieldNo +
+              "," +
+              String(g.label).replace(/,/g, " ") +
+              "," +
+              (idx + 1) +
+              "," +
+              p.lat +
+              "," +
+              p.lng
+          );
+        });
+      });
       const b = computeBoundingBoxLatLngPad();
-      if (b && savedPoints.length) {
+      if (b && allPointsFlat().length) {
         lines.push("");
         lines.push("bounding_box_sw_lat,bounding_box_sw_lon,bounding_box_ne_lat,bounding_box_ne_lon");
-        lines.push(
-          b.sw.lat + "," + b.sw.lng + "," + b.ne.lat + "," + b.ne.lng
-        );
+        lines.push(b.sw.lat + "," + b.sw.lng + "," + b.ne.lat + "," + b.ne.lng);
       }
-      downloadBlob("saved_map_points.csv", lines.join("\n"), "text/csv;charset=utf-8");
-      setStatus("Downloaded saved_map_points.csv", true);
+      downloadBlob("saved_field_groups.csv", lines.join("\n"), "text/csv;charset=utf-8");
+      setStatus("Downloaded saved_field_groups.csv (grouped by field_no).", true);
     });
 
     document.getElementById("btnClearSaved").addEventListener("click", () => {
-      savedPoints.forEach((p) => pointsLayer.removeLayer(p.marker));
-      savedPoints.length = 0;
-      localStorage.removeItem(LS_POINTS);
+      pointGroups.forEach(function (g) {
+        g.points.forEach(function (p) {
+          pointsLayer.removeLayer(p.marker);
+        });
+        g.points.length = 0;
+      });
+      pointGroups = [];
+      localStorage.removeItem(LS_GROUPS);
+      ensureDefaultGroup();
+      syncActiveFieldSelect();
+      persistSavedPoints();
       redrawSavedList();
       onSavedPointsChanged();
-      setStatus("All saved points cleared.", true);
+      setStatus("Cleared all fields; fresh Field 1 ready.", true);
     });
 
     loadSavedPoints();
+
+    document.getElementById("activeFieldGroup").addEventListener("change", function () {
+      activeGroupId = this.value;
+      persistSavedPoints();
+      const ag = getActiveGroup();
+      setStatus(ag ? "Active field: " + ag.label + "." : "", true);
+    });
+    document.getElementById("btnAddField").addEventListener("click", addNewFieldGroup);
+
+    function styleApBoundary() {
+      return {
+        color: "#ffd60a",
+        weight: 4,
+        opacity: 1,
+        fill: false,
+        fillOpacity: 0,
+        lineCap: "round",
+        lineJoin: "round",
+      };
+    }
+
+    function styleApMandal() {
+      return {
+        color: "rgba(255, 255, 255, 0.78)",
+        weight: 1,
+        opacity: 0.92,
+        fill: false,
+        fillOpacity: 0,
+        lineCap: "round",
+        lineJoin: "round",
+      };
+    }
+
+    function buildMandalSearchIndex(fc) {
+      if (!fc || !Array.isArray(fc.features)) {
+        apMandalsSearchList = null;
+        return;
+      }
+      apMandalsSearchList = fc.features.map((feature) => {
+        const p = feature.properties || {};
+        const mandal = String(p.mandal || p.name || "").trim();
+        const district = String(p.district || p.dt_nm || "").trim();
+        const code = p.mandal_code != null && p.mandal_code !== "" ? String(p.mandal_code) : "";
+        const haystack = [mandal, district, code, p.dt_code, p.st_code, p.state]
+          .filter(function (x) {
+            return x != null && String(x) !== "";
+          })
+          .join("\t")
+          .toLowerCase();
+        const label = mandal ? (district ? mandal + " — " + district : mandal) : district || code || "Mandal";
+        const subParts = [];
+        if (code) subParts.push("Code " + code);
+        if (district && !label.includes(district)) subParts.push(district);
+        return { feature: feature, haystack: haystack, label: label, sub: subParts.join(" · ") };
+      });
+    }
+
+    function syncMandalSearchInput() {
+      const el = document.getElementById("mandalSearchInput");
+      if (!el) return;
+      if (apMandalsSearchList && apMandalsSearchList.length) {
+        el.disabled = false;
+        el.placeholder = "e.g. Muthukur, Nellore, 05181…";
+      } else {
+        el.disabled = true;
+        el.placeholder = "Mandals unavailable";
+        el.value = "";
+      }
+      renderMandalSearchResults(filterMandalsForSearch(el.disabled ? "" : el.value));
+    }
+
+    function filterMandalsForSearch(raw) {
+      if (!apMandalsSearchList) return [];
+      const q = String(raw || "").trim().toLowerCase();
+      if (!q) return [];
+      const tokens = q.split(/\s+/).filter(Boolean);
+      const max = 50;
+      const out = [];
+      for (let i = 0; i < apMandalsSearchList.length && out.length < max; i++) {
+        const row = apMandalsSearchList[i];
+        const ok = tokens.every(function (t) {
+          return row.haystack.indexOf(t) !== -1;
+        });
+        if (ok) out.push(row);
+      }
+      return out;
+    }
+
+    function renderMandalSearchResults(rows) {
+      const box = document.getElementById("mandalSearchResults");
+      if (!box) return;
+      box.textContent = "";
+      if (!apMandalsSearchList) {
+        const d = document.createElement("div");
+        d.className = "mandal-search-empty";
+        d.textContent = "Mandals are not loaded.";
+        box.appendChild(d);
+        return;
+      }
+      const input = document.getElementById("mandalSearchInput");
+      const q = input ? String(input.value || "").trim() : "";
+      if (!q) {
+        const d = document.createElement("div");
+        d.className = "mandal-search-empty";
+        d.textContent = "Type to search (" + apMandalsSearchList.length + " mandals).";
+        box.appendChild(d);
+        return;
+      }
+      if (!rows.length) {
+        const d = document.createElement("div");
+        d.className = "mandal-search-empty";
+        d.textContent = "No matches for \"" + q.replace(/"/g, "") + "\".";
+        box.appendChild(d);
+        return;
+      }
+      rows.forEach(function (item) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "mandal-search-row";
+        const title = document.createElement("div");
+        title.className = "mandal-search-row-title";
+        title.textContent = item.label;
+        btn.appendChild(title);
+        if (item.sub) {
+          const sub = document.createElement("div");
+          sub.className = "mandal-search-row-sub";
+          sub.textContent = item.sub;
+          btn.appendChild(sub);
+        }
+        btn.addEventListener("click", function () {
+          flyToMandalFeature(item.feature);
+        });
+        box.appendChild(btn);
+      });
+    }
+
+    function styleMandalSearchHighlight() {
+      return {
+        color: "#22d3ee",
+        weight: 3,
+        opacity: 1,
+        fill: false,
+        fillOpacity: 0,
+        lineCap: "round",
+        lineJoin: "round",
+      };
+    }
+
+    function flyToMandalFeature(feature) {
+      if (!feature || !feature.geometry) return;
+      mandalSearchHighlightLayer.clearLayers();
+      L.geoJSON(feature, {
+        pane: "mandalSearchHighlight",
+        interactive: false,
+        style: styleMandalSearchHighlight,
+      }).addTo(mandalSearchHighlightLayer);
+      const probe = L.geoJSON(feature);
+      const b = probe.getBounds();
+      probe.remove();
+      if (b.isValid()) {
+        map.flyToBounds(b.pad(0.06), { maxZoom: 14, duration: 0.85 });
+      }
+      const p = feature.properties || {};
+      setStatus("Mandal: " + (p.mandal || "?") + (p.district ? " · " + p.district : ""), true);
+    }
+
+    let mandalSearchDebounce = null;
+    function scheduleMandalSearch() {
+      clearTimeout(mandalSearchDebounce);
+      mandalSearchDebounce = setTimeout(function () {
+        const el = document.getElementById("mandalSearchInput");
+        const q = el ? el.value.trim() : "";
+        renderMandalSearchResults(filterMandalsForSearch(q));
+      }, 200);
+    }
+
+    async function loadApReferenceLayers() {
+      setStatus("Loading ap_boundary.geojson & ap_mandals.geojson…", true);
+      let boundaryGj = null;
+      let mandalsGj = null;
+      let errBoundary = null;
+      let errMandals = null;
+      try {
+        const [resB, resM] = await Promise.all([
+          fetch("ap_boundary.geojson", { cache: "force-cache" }),
+          fetch("ap_mandals.geojson", { cache: "force-cache" }),
+        ]);
+        if (resB.ok) boundaryGj = await resB.json();
+        else errBoundary = resB.status + " " + resB.statusText;
+        if (resM.ok) mandalsGj = await resM.json();
+        else errMandals = resM.status + " " + resM.statusText;
+      } catch (e) {
+        apMandalsSearchList = null;
+        syncMandalSearchInput();
+        setStatus(
+          "Could not load AP GeoJSON (" +
+            e.message +
+            "). Serve this folder over HTTP (e.g. live server) if opening as file://.",
+          false
+        );
+        return;
+      }
+
+      if (boundaryGj) {
+        apBoundaryLayer.clearLayers();
+        apBoundaryGeo = L.geoJSON(boundaryGj, {
+          pane: "apBoundaryBase",
+          interactive: false,
+          style: styleApBoundary,
+        }).addTo(apBoundaryLayer);
+      } else {
+        apBoundaryGeo = null;
+      }
+
+      if (mandalsGj) {
+        apMandalsLayer.clearLayers();
+        apMandalsGeo = L.geoJSON(mandalsGj, {
+          pane: "apMandalsBase",
+          interactive: false,
+          style: styleApMandal,
+        }).addTo(apMandalsLayer);
+      } else {
+        apMandalsGeo = null;
+      }
+
+      if (mandalsGj) {
+        buildMandalSearchIndex(mandalsGj);
+      } else {
+        apMandalsSearchList = null;
+      }
+      syncMandalSearchInput();
+
+      const mergeBounds = [];
+      if (apBoundaryGeo) {
+        const b = apBoundaryGeo.getBounds();
+        if (b.isValid()) mergeBounds.push(b);
+      }
+      if (apMandalsGeo) {
+        const b = apMandalsGeo.getBounds();
+        if (b.isValid()) mergeBounds.push(b);
+      }
+      if (mergeBounds.length) {
+        let u = mergeBounds[0];
+        for (let i = 1; i < mergeBounds.length; i++) u = u.extend(mergeBounds[i]);
+        map.fitBounds(u.pad(0.04));
+      }
+
+      const okParts = [];
+      if (boundaryGj) okParts.push("state boundary");
+      if (mandalsGj) okParts.push("mandals");
+      const failParts = [];
+      if (errBoundary) failParts.push("ap_boundary.geojson: " + errBoundary);
+      if (errMandals) failParts.push("ap_mandals.geojson: " + errMandals);
+
+      if (okParts.length) {
+        setStatus(
+          "Loaded " +
+            okParts.join(" & ") +
+            " — load field GeoJSON or use demo." +
+            (failParts.length ? " Missing: " + failParts.join("; ") + "." : ""),
+          failParts.length === 0
+        );
+      } else {
+        setStatus("Could not load boundary or mandals: " + failParts.join("; "), false);
+      }
+    }
+    loadApReferenceLayers();
 
     function setStatus(t, ok) {
       const el = document.getElementById("status");
@@ -609,6 +1184,7 @@
       }
       const gj = typeof data === "string" ? JSON.parse(data) : data;
       geoLayer = L.geoJSON(gj, {
+        bubblingMouseEvents: true,
         style: styleFeature,
         onEachFeature(feature, layer) {
           const p = feature.properties || {};
@@ -662,8 +1238,6 @@
       }
       return { type: "FeatureCollection", features };
     }
-
-    setStatus("Basemap only — load GeoJSON or click “Reload demo”.", true);
 
     document.getElementById("btnDemo").addEventListener("click", () => {
       renderGeoJSON(demoGeoJSON());
@@ -731,6 +1305,19 @@
     document.getElementById("scale01").addEventListener("change", () => {
       document.getElementById("propName").dispatchEvent(new Event("change"));
     });
+
+    (function initMandalSearchUI() {
+      const input = document.getElementById("mandalSearchInput");
+      if (!input) return;
+      input.addEventListener("input", scheduleMandalSearch);
+      input.addEventListener("search", function () {
+        if (!input.value) {
+          renderMandalSearchResults(filterMandalsForSearch(""));
+        }
+      });
+    })();
+
+    syncMandalSearchInput();
 
     const side = document.getElementById("side");
     const toggle = document.getElementById("togglePanel");
